@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>লিরিক স্টুডিও</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--line:#2a313c;--text:#e8edf3;--mut:#8b96a5;--acc:#ff6b4a;--acc2:#ffb347}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:"Noto Sans Bengali",system-ui,sans-serif}
+body{display:flex;flex-direction:column}
+header{padding:10px 14px;padding-top:calc(10px + env(safe-area-inset-top));font-weight:700;font-size:18px;border-bottom:1px solid var(--line)}
+#stage{padding:8px 12px 0;display:none}
+body:not([data-tab="0"]) #stage{display:block}
+canvas{width:100%;height:30vh;object-fit:contain;border-radius:10px;background:#000;display:block}
+main{flex:1;overflow-y:auto;padding:12px}
+.tab{display:none}.tab.on{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px}
+h3{margin:0 0 8px;font-size:15px}
+.mut{color:var(--mut);font-size:13px;margin:6px 0}
+.row{display:flex;gap:8px;margin:8px 0}.row>*{flex:1}
+.between{justify-content:space-between}
+button,label.btn{display:block;text-align:center;background:#222a35;color:var(--text);border:1px solid var(--line);border-radius:12px;padding:12px;font:inherit;font-size:14px}
+.pri{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#1a0d08;font-weight:700;border:0}
+.big{width:100%;padding:18px;font-size:17px}
+textarea,select{width:100%;background:#0d1117;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px;font:inherit}
+input[type=range]{width:100%}
+input[type=color]{width:100%;height:42px;border:0;background:none;padding:0}
+.seg{display:flex;gap:6px}.seg button{flex:1;padding:10px 4px;font-size:13px}
+.seg button.on{background:var(--acc);color:#1a0d08;border-color:var(--acc)}
+.ln{padding:8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:14px}
+.ln.cur{border-color:var(--acc);background:#2a1c18}
+.ln small{color:var(--mut);display:block}
+.bar{height:10px;background:#222a35;border-radius:6px;overflow:hidden;margin:12px 0}
+#progress{height:100%;width:0;background:linear-gradient(90deg,var(--acc),var(--acc2))}
+nav{display:flex;border-top:1px solid var(--line);background:var(--card);padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;background:none;border:0;border-radius:0;padding:10px 2px;font-size:12px;color:var(--mut)}
+nav button.on{color:var(--acc);font-weight:700}
+#toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#000c;color:#fff;padding:10px 16px;border-radius:20px;font-size:14px;display:none;z-index:9}
+</style>
+</head>
+<body data-tab="0">
+
+<header>🎵 লিরিক স্টুডিও</header>
+
+<div id="stage"><canvas id="preview"></canvas></div>
+
+<main>
+  <section class="tab on" id="t0">
+    <div class="card">
+      <h3>১. গান বাছাই করো</h3>
+      <label class="btn pri" for="audioFile">🎵 গান বাছাই করো</label>
+      <input type="file" id="audioFile" accept="audio/*" hidden>
+      <p id="audioInfo" class="mut">এখনো গান বাছাই হয়নি</p>
+    </div>
+    <div class="card">
+      <h3>২. লিরিক লেখো</h3>
+      <p class="mut">প্রতিটি লাইন আলাদা লাইনে লেখো।</p>
+      <textarea id="lyricsText" rows="10" placeholder="এখানে লিরিক পেস্ট করো..."></textarea>
+      <div class="row"><button class="pri" id="applyLyricsBtn">✅ লিরিক নিশ্চিত করো</button></div>
+      <p id="lyricInfo" class="mut"></p>
+    </div>
+  </section>
+
+  <section class="tab" id="t1">
+    <div class="card">
+      <input type="range" id="seek" min="0" max="1000" value="0">
+      <div class="row between"><span id="timeLabel">0:00.0</span><span id="curLineLabel" class="mut"></span></div>
+      <div class="row"><button id="playBtn">▶ চালাও</button><button id="restartBtn">⏮ শুরু থেকে</button></div>
+    </div>
+    <button class="pri big" id="tapBtn">👆 এই লাইন এখন শুরু</button>
+    <div class="row">
+      <button id="undoBtn">↩ ফেরাও</button>
+      <button id="nudgeM">−০.১ সেকেন্ড</button>
+      <button id="nudgeP">+০.১ সেকেন্ড</button>
+    </div>
+    <div class="card"><h3>লাইনের তালিকা</h3><div id="syncList"></div></div>
+  </section>
+
+  <section class="tab" id="t2">
+    <div class="card">
+      <h3>ব্যাকগ্রাউন্ড</h3>
+      <div class="seg" id="bgSeg">
+        <button data-bg="rain" class="on">🌧 বৃষ্টি</button>
+        <button data-bg="media">🖼 নিজের ছবি/ভিডিও</button>
+      </div>
+      <div id="mediaBox" hidden>
+        <label class="btn" for="bgFile" style="margin-top:8px">📁 ছবি বা ভিডিও বাছাই করো</label>
+        <input type="file" id="bgFile" accept="image/*,video/*" hidden>
+        <p id="bgInfo" class="mut"></p>
+      </div>
+    </div>
+    <div class="card">
+      <h3>স্ক্রিনের মাপ</h3>
+      <div class="seg" id="ratioSeg">
+        <button data-r="16:9" class="on">16:9 ইউটিউব</button>
+        <button data-r="9:16">9:16 রিলস</button>
+        <button data-r="1:1">1:1</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>লেখা</h3>
+      <p class="mut">লেখার সাইজ</p>
+      <input type="range" id="fontSize" min="30" max="110" value="64">
+      <p class="mut">লেখার রঙ</p>
+      <input type="color" id="textColor" value="#ffffff">
+      <p class="mut">ব্যাকগ্রাউন্ড কতটা অন্ধকার হবে</p>
+      <input type="range" id="dim" min="0" max="80" value="35">
+    </div>
+  </section>
+
+  <section class="tab" id="t3">
+    <div class="card">
+      <h3>ভিডিও বানাও</h3>
+      <p class="mut">ভিডিও বানানোর সময় অ্যাপ খোলা রেখো, স্ক্রিন বন্ধ কোরো না।</p>
+      <button class="pri big" id="renderBtn">🎬 ভিডিও বানাও</button>
+      <div class="bar"><div id="progress"></div></div>
+      <p id="renderStatus" class="mut"></p>
+    </div>
+    <div class="card">
+      <h3>অন্যান্য সেভ</h3>
+      <div class="row"><button id="saveLrcBtn">📝 LRC সেভ</button><button id="saveProjBtn">💾 প্রজেক্ট সেভ</button></div>
+    </div>
+  </section>
+</main>
+
+<nav id="nav">
+  <button data-t="0" class="on">🎵<br>গান ও লিরিক</button>
+  <button data-t="1">⏱<br>সিঙ্ক</button>
+  <button data-t="2">🎨<br>ডিজাইন</button>
+  <button data-t="3">🎬<br>ভিডিও</button>
+</nav>
+
+<div id="toast"></div>
+<audio id="audio" preload="auto"></audio>
+<video id="bgVideo" muted loop playsinline style="display:none"></video>
+<script src="app.js"></script>
+</body>
+</html>
