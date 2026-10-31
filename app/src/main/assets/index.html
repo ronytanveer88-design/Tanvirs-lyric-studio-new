@@ -168,362 +168,443 @@ body{background:#070709;color:#fff;font-family:'Hind Siliguri',sans-serif;min-he
 <audio id="audioEl" preload="metadata" crossorigin="anonymous"></audio>
 <canvas id="captureCanvas" style="display:none"></canvas>
 <script>
-let lyrics=[], audioEl=document.getElementById('audioEl'), t=0, playing=false, raf=null, selectedIdx=0, history=[], duration=0, audioBuffer=null;
-let renderAudioContext=null, renderAudioSource=null, renderAudioDestination=null, isRendering=false;
-function fmt(s){ if(isNaN(s)) return '0:00.0'; let m=Math.floor(s/60), sec=Math.floor(s%60), dec=Math.floor((s%1)*10); return m+':'+String(sec).padStart(2,'0')+'.'+dec; }
-function applyLyrics(){
- let raw=document.getElementById('lyricInput').value.trim(); if(!raw){ alert('Lyrics likhun'); return; }
- let lines=raw.split('\n').map(s=>s.trim()).filter(s=>s.length>0);
- lyrics=lines.map(txt=>({text:txt, start:null, end:null, duration:3}));
- selectedIdx=0; if(duration===0 && audioEl.duration) duration=audioEl.duration;
- renderSyncList(); renderPreview(0); saveToLocal();
+let lyrics = [], audioEl = document.getElementById('audioEl'), t = 0, playing = false, raf = null, selectedIdx = 0, history = [], duration = 0;
+let renderAudioContext = null, renderAudioSource = null, renderAudioDestination = null, isRendering = false;
+let currentRatio = 'reels';
+
+function fmt(s) {
+  if (isNaN(s)) return '0:00.0';
+  let m = Math.floor(s / 60), sec = Math.floor(s % 60), dec = Math.floor((s % 1) * 10);
+  return m + ':' + String(sec).padStart(2, '0') + '.' + dec;
 }
-function renderSyncList(){
- let c=document.getElementById('syncList'); const keepTop=c.scrollTop; c.innerHTML='';
- lyrics.forEach((l,i)=>{
-  let d=document.createElement('div'); d.className='lyricItem'+(i===selectedIdx?' active':'');
-  d.innerHTML=`<div class="num">${String(i+1).padStart(2,'0')}</div><div class="txt">${l.text}</div><div class="time">${l.start!==null? fmt(l.start): '--:--'}</div><div style="display:flex;gap:4px"><button class="btn small" onclick="selectLine(${i})">Edit</button><button class="btn small" onclick="jumpToLine(${i})">Go</button></div>`;
-  d.onclick=()=>selectLine(i); c.appendChild(d);
- });
- c.scrollTop=keepTop;
- const nt=document.getElementById('nextToSetText');
- if(nt) nt.textContent=lyrics[selectedIdx]? String(selectedIdx+1).padStart(2,'0')+'. '+lyrics[selectedIdx].text : '—';
- if(!document.getElementById('autoFollow') || document.getElementById('autoFollow').checked) scrollToSelected();
- lastPlayingIdx=-2; drawTimeline();
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
 }
-let lastPlayingIdx=-2;
-function scrollToSelected(){
- const c=document.getElementById('syncList'); const el=c.children[selectedIdx]; if(!el) return;
- const top=el.getBoundingClientRect().top-c.getBoundingClientRect().top+c.scrollTop;
- c.scrollTop=Math.max(0, top-c.clientHeight/2+el.offsetHeight/2);
+
+function saveToLocal() {
+  try {
+    localStorage.setItem('lyricStudioProject', JSON.stringify({ lyrics, selectedIdx, audioName: audioEl.dataset.name || '', duration }));
+  } catch (e) {}
 }
-function updatePlayingHighlight(time){
- let idx=-1;
- for(let i=0;i<lyrics.length;i++){ const l=lyrics[i]; if(l.start===null) continue; const nx=lyrics.slice(i+1).find(x=>x.start!==null); const end=l.end!==null? l.end:(nx? nx.start:l.start+3); if(time>=l.start && time<end){ idx=i; break; } }
- if(idx===lastPlayingIdx) return; lastPlayingIdx=idx;
- const c=document.getElementById('syncList'); Array.from(c.children).forEach((el,i)=>el.classList.toggle('playing',i===idx));
+
+function loadFromLocal() {
+  try {
+    const raw = localStorage.getItem('lyricStudioProject');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (Array.isArray(data.lyrics) && data.lyrics.length) {
+      lyrics = data.lyrics;
+      selectedIdx = data.selectedIdx || 0;
+      if (data.audioName) setText('audioInfo', '✅ ' + data.audioName);
+      renderSyncList();
+      renderPreview();
+    }
+  } catch (e) {}
 }
-function setSpeed(r){
- audioEl.defaultPlaybackRate=r; audioEl.playbackRate=r;
- audioEl.preservesPitch=true; audioEl.webkitPreservesPitch=true; audioEl.mozPreservesPitch=true;
- document.querySelectorAll('.speedBtn').forEach(b=>b.classList.toggle('on',parseFloat(b.dataset.r)===r));
+
+function setRatio(name) {
+  currentRatio = name;
+  const wrap = document.getElementById('previewWrap');
+  if (!wrap) return;
+  wrap.classList.remove('reels', 'youtube', 'square');
+  wrap.classList.add(name === 'youtube' ? 'youtube' : name === 'square' ? 'square' : 'reels');
+  renderPreview();
 }
-function seekBy(d){
- if(!audioEl.src) return; const nt=Math.max(0,Math.min((audioEl.duration||1e9),audioEl.currentTime+d)); audioEl.currentTime=nt; renderPreview(nt);
+
+function updatePlayButtons() {
+  const stepBtn = document.getElementById('stepPlayBtn');
+  const bPlay = document.getElementById('bPlay');
+  const playBtn = document.getElementById('playBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const label = playing ? 'Pause' : 'Play';
+  if (stepBtn) stepBtn.textContent = label;
+  if (bPlay) bPlay.textContent = label;
+  if (playBtn) playBtn.textContent = label;
+  if (pauseBtn) pauseBtn.textContent = playing ? 'Playing' : 'Pause';
 }
-function selectLine(i){ selectedIdx=i; renderSyncList(); }
-function jumpToLine(i){ let l=lyrics[i]; if(l && l.start!==null){ audioEl.currentTime=l.start; t=l.start; renderPreview(t); } selectLine(i); }
-function setCurrentLineTime(){
- if(lyrics.length===0){ alert('Apply lyrics first'); return; }
- if(!audioEl.src){ alert('Select audio first'); return; }
- const delay=parseFloat((document.getElementById('tapDelay')||{value:'0'}).value)||0; let ct=Math.max(0,(audioEl.currentTime||t)-delay*(audioEl.playbackRate||1)); history.push(JSON.parse(JSON.stringify(lyrics))); if(history.length>30) history.shift();
- lyrics[selectedIdx].start=parseFloat(ct.toFixed(1));
- let nextIdx=selectedIdx+1;
- if(nextIdx<lyrics.length && lyrics[nextIdx].start!==null){ lyrics[selectedIdx].end=lyrics[nextIdx].start; } else { lyrics[selectedIdx].end=lyrics[selectedIdx].start+3; }
- if(selectedIdx<lyrics.length-1) selectedIdx++;
- renderSyncList(); saveToLocal();
-}
-function nudge(d){ if(!lyrics[selectedIdx]) return; history.push(JSON.parse(JSON.stringify(lyrics))); if(lyrics[selectedIdx].start===null) lyrics[selectedIdx].start=0; lyrics[selectedIdx].start=Math.max(0, parseFloat((lyrics[selectedIdx].start+d).toFixed(1))); renderSyncList(); renderPreview(t); saveToLocal(); }
-function undo(){ if(history.length===0) return; lyrics=history.pop(); renderSyncList(); saveToLocal(); }
-function clearLyrics(){ document.getElementById('lyricInput').value=''; lyrics=[]; selectedIdx=0; renderSyncList(); renderPreview(0); saveToLocal(); }
-document.getElementById('audioFile').onchange = async (e) => {
- const f=e.target.files && e.target.files[0];
- if(!f) return;
- if(audioEl.dataset.objectUrl) URL.revokeObjectURL(audioEl.dataset.objectUrl);
- const url=URL.createObjectURL(f);
- audioEl.dataset.objectUrl=url;
- audioEl.src=url;
- document.getElementById('audioInfo').textContent='অডিও লোড হচ্ছে...';
- audioEl.onloadedmetadata=()=>{
-   duration=Number.isFinite(audioEl.duration)?audioEl.duration:0;
-   document.getElementById('audioInfo').textContent=f.name+' • '+fmt(duration,false);
-   document.getElementById('timeLabel').textContent='0:00.0 / '+fmt(duration);
-   renderPreview(0); saveToLocal();
- };
- try{
-   const AudioContextClass=window.AudioContext||window.webkitAudioContext;
-   if(AudioContextClass){
-     const decodeCtx=new AudioContextClass();
-     const ab=await f.arrayBuffer();
-     audioBuffer=await decodeCtx.decodeAudioData(ab);
-     drawWaveform();
-     drawTimeline();
-     await decodeCtx.close();
-   }
- }catch(err){
-   console.warn('Waveform decode unavailable:',err);
- }
-};
-function drawWaveform(){ let canvas=document.getElementById('waveform'); let w=canvas.width=canvas.clientWidth*2; let h=canvas.height=64*2; let ctx=canvas.getContext('2d'); ctx.clearRect(0,0,w,h); if(!audioBuffer){ ctx.fillStyle='#222'; ctx.fillRect(0,0,w,h); return; } let data=audioBuffer.getChannelData(0); let step=Math.floor(data.length/w); let amp=h/2; ctx.fillStyle='#1a1a1e'; ctx.fillRect(0,0,w,h); ctx.beginPath(); ctx.strokeStyle='#555'; for(let i=0;i<w;i++){ let min=1,max=-1; for(let j=0;j<step;j++){ let d=data[i*step+j]; if(d<min)min=d; if(d>max)max=d; } ctx.moveTo(i,(1+min)*amp); ctx.lineTo(i,(1+max)*amp); } ctx.stroke(); }
-function drawTimeline(){ let canvas=document.getElementById('waveCanvas'); let wrap=document.getElementById('timelineWrap'); if(!wrap) return; canvas.width=wrap.clientWidth*2; canvas.height=84*2; let ctx=canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#0e0e10'; ctx.fillRect(0,0,canvas.width,canvas.height); if(audioBuffer){ let data=audioBuffer.getChannelData(0); let step=Math.floor(data.length/canvas.width); let amp=canvas.height*0.35; ctx.beginPath(); ctx.strokeStyle='#333'; for(let i=0;i<canvas.width;i++){ let min=1,max=-1; for(let j=0;j<step;j++){ let d=data[i*step+j]; if(d<min)min=d; if(d>max)max=d; } ctx.moveTo(i,canvas.height/2+min*amp); ctx.lineTo(i,canvas.height/2+max*amp); } ctx.stroke(); } lyrics.forEach((l,i)=>{ if(l.start===null) return; let x=(l.start/(duration||1))*canvas.width; ctx.fillStyle=i===selectedIdx?'#fff':'#666'; ctx.fillRect(x,0,2,canvas.height); ctx.fillText(String(i+1),x+4,16); }); document.getElementById('playhead').style.left=(t/(duration||1)*100)+'%'; }
-function renderPreview(time){
- t=time; document.getElementById('timeLabel').textContent=fmt(time)+' / '+fmt(duration||0);
- document.getElementById('previewProg').style.width=(duration? time/duration*100:0)+'%';
- let cur=null,next=null;
- for(let i=0;i<lyrics.length;i++){ let l=lyrics[i]; if(l.start===null) continue; let end=l.end!==null? l.end: (lyrics[i+1]&&lyrics[i+1].start!==null? lyrics[i+1].start: l.start+3); if(time>=l.start && time<end){ cur=l; for(let j=i+1;j<lyrics.length;j++){ if(lyrics[j].start!==null){ next=lyrics[j]; break; } } break; } }
- let curEl=document.getElementById('previewCur'), nextEl=document.getElementById('previewNext');
- if(!cur){ curEl.textContent='♪'; nextEl.textContent='Instrumental - No Lyric'; } else { curEl.textContent=cur.text; nextEl.textContent=document.getElementById('showNext').checked && next? next.text:''; }
- drawTimeline();
-}
-function playAudio(){ if(!audioEl.src){ alert('Audio select korun'); return; } playing=true; audioEl.play(); document.getElementById('playBtn').textContent='Pause'; document.getElementById('bPlay').textContent='Pause'; const sp=document.getElementById('stepPlayBtn'); if(sp) sp.textContent='Pause'; loop(); }
-function pauseAudio(){ playing=false; audioEl.pause(); document.getElementById('playBtn').textContent='Play'; document.getElementById('bPlay').textContent='Play'; const sp=document.getElementById('stepPlayBtn'); if(sp) sp.textContent='Play'; cancelAnimationFrame(raf); }
-function restartAudio(){ audioEl.currentTime=0; t=0; renderPreview(0); }
-function loop(){ if(!playing) return; t=audioEl.currentTime; renderPreview(t); updatePlayingHighlight(t); raf=requestAnimationFrame(loop); }
-document.getElementById('playBtn').onclick=()=> playing? pauseAudio(): playAudio();
-document.getElementById('bPlay').onclick=()=> playing? pauseAudio(): playAudio();
-document.getElementById('pauseBtn').onclick=()=> pauseAudio();
-document.getElementById('previewWrap').onclick=(e)=>{ if(e.target.closest('button')) return; playing? pauseAudio(): playAudio(); };
-let rainCanvas=document.getElementById('rainCanvas'), rctx=rainCanvas.getContext('2d');
-function resizeRain(){ let wrap=document.getElementById('previewWrap'); rainCanvas.width=wrap.clientWidth*2; rainCanvas.height=wrap.clientHeight*2; }
-let drops=[]; function initRain(){ resizeRain(); drops=[]; for(let i=0;i<90;i++) drops.push({x:Math.random()*rainCanvas.width,y:Math.random()*rainCanvas.height,l:8+Math.random()*12,s:1+Math.random()*2}); }
-function drawRain(){ if(document.hidden) return; if(!document.getElementById('showRain').checked){ rctx.clearRect(0,0,rainCanvas.width,rainCanvas.height); requestAnimationFrame(drawRain); return; } rctx.clearRect(0,0,rainCanvas.width,rainCanvas.height); rctx.strokeStyle='rgba(200,200,220,0.22)'; rctx.lineWidth=1; for(let d of drops){ rctx.beginPath(); rctx.moveTo(d.x,d.y); rctx.lineTo(d.x+0.3,d.y+d.l); rctx.stroke(); d.y+=d.s*1.6; if(d.y>rainCanvas.height){d.y=-20; d.x=Math.random()*rainCanvas.width;}} requestAnimationFrame(drawRain); }
-initRain(); drawRain(); window.addEventListener('resize',()=>{ resizeRain(); initRain(); });
-function setRatio(r){ let wrap=document.getElementById('previewWrap'); wrap.className='previewWrap '+r; resizeRain(); initRain(); if(typeof saveToLocal==='function') saveToLocal(); }
-function saveToLocal(){ try { localStorage.setItem('lyricProject', JSON.stringify({lyrics, raw:document.getElementById('lyricInput').value})); return true; } catch(err) { const status=document.getElementById('renderStatus'); if(status) status.textContent='অটো-সেভ করা যায়নি। Save চাপ দিয়ে JSON প্রজেক্ট ফাইল সংরক্ষণ করুন।'; return false; } }
-function saveProject(){ let data={lyrics, raw:document.getElementById('lyricInput').value, version:3}; try { localStorage.setItem('lyricProject', JSON.stringify(data)); } catch(err) { /* The downloadable project file is still useful when local storage is full. */ } let blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}); let url=URL.createObjectURL(blob); let a=document.createElement('a'); a.href=url; a.download='lyric-studio-project-'+Date.now()+'.json'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),60000); }
-document.getElementById('importFile').onchange=(e)=>{ let f=e.target.files[0]; if(!f) return; let r=new FileReader(); r.onload=()=>{ try{ let d=JSON.parse(r.result); lyrics=d.lyrics||[]; if(d.raw) document.getElementById('lyricInput').value=d.raw; renderSyncList(); renderPreview(0); }catch(err){ alert('Invalid JSON'); } }; r.readAsText(f); };
-function exportProject(){ saveProject(); }
-let captureCanvas=document.getElementById('captureCanvas');
-async function startRender(){
- if(isRendering) return;
- if(!lyrics.length){ alert('আগে লিরিক্স লিখুন'); return; }
- if(!audioEl.src){ alert('আগে একটি গান আপলোড করুন'); return; }
- if(!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream){
-   alert('এই ব্রাউজারে ভিডিও রেন্ডার সমর্থিত নয়। Chrome-এর সর্বশেষ সংস্করণ ব্যবহার করুন।'); return;
- }
- if(lyrics.every(l=>l.start===null)){
-   alert('আগে অন্তত একটি লাইনের টাইমিং সেট করুন'); return;
- }
 
- const rstat=document.getElementById('renderStatus');
- const renderBtn=document.getElementById('renderBtn');
- let recorder=null, chunks=[], frameId=null, safetyTimer=null;
- try{
-   rstat.textContent='রেন্ডার প্রস্তুত হচ্ছে...';
-   renderBtn.disabled=true;
-   isRendering=true;
-
-   // Ensure Bengali fonts are available before drawing text on canvas.
-   if(document.fonts && document.fonts.ready) await document.fonts.ready;
-
-   const previewWrap=document.getElementById('previewWrap');
-   const ratio=previewWrap.clientWidth / Math.max(1, previewWrap.clientHeight);
-   let w=720, h=Math.round(720 / Math.max(0.1, ratio));
-   if(!Number.isFinite(h) || h<300) h=1280;
-   const pCanvas=document.createElement('canvas');
-   pCanvas.width=w; pCanvas.height=h;
-   const pctx=pCanvas.getContext('2d');
-   if(!pctx) throw new Error('Canvas তৈরি করা যায়নি');
-
-   const videoStream=pCanvas.captureStream(30);
-   let combined=videoStream;
-
-   // Create one MediaElementSource for this audio element and reuse it.
-   // Creating it repeatedly causes InvalidStateError on later renders.
-   const AudioContextClass=window.AudioContext || window.webkitAudioContext;
-   if(AudioContextClass){
-     if(!renderAudioContext){
-       renderAudioContext=new AudioContextClass();
-       renderAudioSource=renderAudioContext.createMediaElementSource(audioEl);
-       renderAudioDestination=renderAudioContext.createMediaStreamDestination();
-       renderAudioSource.connect(renderAudioDestination);
-       renderAudioSource.connect(renderAudioContext.destination);
-     }
-     if(renderAudioContext.state==='suspended') await renderAudioContext.resume();
-     combined=new MediaStream([
-       ...videoStream.getVideoTracks(),
-       ...renderAudioDestination.stream.getAudioTracks()
-     ]);
-   }
-
-   const mimeCandidates=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
-   const mimeType=mimeCandidates.find(t=>MediaRecorder.isTypeSupported(t));
-   if(!mimeType) throw new Error('এই ব্রাউজারে সমর্থিত WebM ভিডিও এনকোডার পাওয়া যায়নি');
-   recorder=new MediaRecorder(combined,{mimeType});
-
-   recorder.ondataavailable=e=>{ if(e.data && e.data.size>0) chunks.push(e.data); };
-   recorder.onerror=e=>{
-     rstat.textContent='রেন্ডারিং ত্রুটি: '+(e.error?.message || 'MediaRecorder error');
-   };
-   recorder.onstop=()=>{
-     try{
-       const blob=new Blob(chunks,{type:recorder.mimeType || 'video/webm'});
-       if(!blob.size) throw new Error('ভিডিও ফাইল খালি তৈরি হয়েছে');
-       const url=URL.createObjectURL(blob);
-       const a=document.createElement('a');
-       a.href=url;
-       a.download='LyricVideo_'+Date.now()+'.webm';
-       document.body.appendChild(a);
-       a.click();
-       a.remove();
-       setTimeout(()=>URL.revokeObjectURL(url),60000);
-       rstat.textContent='রেন্ডার সম্পন্ন! ফাইল ডাউনলোড শুরু হয়েছে: '+a.download+' (WebM)';
-     }catch(err){
-       rstat.textContent='ফাইল তৈরি করা যায়নি: '+err.message;
-     }finally{
-       videoStream.getTracks().forEach(track=>track.stop());
-       isRendering=false;
-       renderBtn.disabled=false;
-       playing=false;
-       audioEl.pause();
-       if(frameId) cancelAnimationFrame(frameId);
-       if(safetyTimer) clearTimeout(safetyTimer);
-     }
-   };
-
-   // Draw a frame from the actual audio time. Lines without a start time are skipped.
-   function frame(){
-     const now=audioEl.currentTime || 0;
-     t=now;
-     const grad=pctx.createRadialGradient(w/2,h/2,0,w/2,h/2,Math.max(w,h));
-     grad.addColorStop(0,'#1e1e32'); grad.addColorStop(1,'#000');
-     pctx.fillStyle=grad; pctx.fillRect(0,0,w,h);
-
-     if(document.getElementById('showRain')?.checked){
-       pctx.strokeStyle='rgba(200,200,220,0.22)';
-       for(const d of drops){
-         pctx.beginPath(); pctx.moveTo(d.x,d.y); pctx.lineTo(d.x+0.3,d.y+d.l); pctx.stroke();
-       }
-     }
-
-     let cur=null;
-     for(let i=0;i<lyrics.length;i++){
-       const line=lyrics[i];
-       if(line.start===null || line.start===undefined) continue;
-       const next=lyrics[i+1];
-       const end=line.end!==null && line.end!==undefined
-         ? line.end
-         : (next && next.start!==null ? next.start : line.start+3);
-       if(now>=line.start && now<end){ cur=line; break; }
-     }
-
-     if(cur){
-       pctx.fillStyle='#fff';
-       pctx.textAlign='center';
-       pctx.textBaseline='middle';
-       pctx.shadowColor='rgba(255,255,255,0.7)';
-       pctx.shadowBlur=20;
-       const baseSize=parseInt(document.getElementById('fontSize')?.value,10)||36;
-       let fontSize=Math.max(20,Math.floor(w*(baseSize/520)));
-       pctx.font='700 '+fontSize+'px "Noto Serif Bengali", sans-serif';
-
-       // Wrap long Bengali lyric lines to fit the video frame.
-       const maxWidth=w*0.86;
-       const words=cur.text.split(/\s+/);
-       const rows=[];
-       let row='';
-       for(const word of words){
-         const candidate=row ? row+' '+word : word;
-         if(row && pctx.measureText(candidate).width>maxWidth){
-           rows.push(row); row=word;
-         }else row=candidate;
-       }
-       if(row) rows.push(row);
-       if(rows.length>3) fontSize=Math.max(18,Math.floor(fontSize*3/rows.length));
-       pctx.font='700 '+fontSize+'px "Noto Serif Bengali", sans-serif';
-       const lineHeight=fontSize*1.45;
-       const startY=h/2-((rows.length-1)*lineHeight/2);
-       rows.forEach((txt,i)=>pctx.fillText(txt,w/2,startY+i*lineHeight,maxWidth));
-       pctx.shadowBlur=0;
-     }
-
-     if(isRendering && !audioEl.ended) frameId=requestAnimationFrame(frame);
-   }
-
-   audioEl.pause();
-   setSpeed(1); // রেন্ডার সবসময় স্বাভাবিক গতিতে
-   audioEl.currentTime=0;
-   renderPreview(0);
-   // Draw first frame before recording starts.
-   frame();
-   recorder.start(250);
-   rstat.textContent='রেন্ডার চলছে... গান শেষ হওয়া পর্যন্ত অপেক্ষা করুন।';
-
-   await audioEl.play();
-   playing=true;
-   const maxDuration=(Number.isFinite(audioEl.duration) && audioEl.duration>0) ? audioEl.duration : (duration||600);
-   safetyTimer=setTimeout(()=>{
-     if(recorder && recorder.state==='recording') recorder.stop();
-   },maxDuration*1000+3000);
-
-   audioEl.onended=()=>{
-     if(recorder && recorder.state==='recording') recorder.stop();
-   };
- }catch(err){
-   if(recorder && recorder.state==='recording') recorder.stop();
-   else{
-     isRendering=false;
-     renderBtn.disabled=false;
-     playing=false;
-     rstat.textContent='রেন্ডারিং শুরু করা যায়নি: '+(err?.message || String(err));
-   }
- }
-}
-function testGap(){
- document.getElementById('lyricInput').value='First line\nSecond line\nThird line after gap\nFourth line';
- applyLyrics();
- if(lyrics.length>=4){
-   lyrics[0].start=1; lyrics[0].end=4;
-   lyrics[1].start=5; lyrics[1].end=8;
-   lyrics[2].start=18; lyrics[2].end=21;
-   lyrics[3].start=22; lyrics[3].end=25;
-   duration=30; renderSyncList(); renderPreview(0);
-   document.getElementById('renderStatus').textContent='Test Gap: 1-4s, 5-8s, gap 8-18s, 18-21s, 22-25s';
- }
-}
-if(('http:'===location.protocol || 'https:'===location.protocol) && 'serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
-
-/* Premium recovery layer: persist editable project and settings, not selected media bytes. */
-const PREMIUM_STATE_KEY = 'lyricProject';
-function getPremiumState(){
-  const ids=['fontSize','fadeMode','showNext','showRain','tapDelay','autoFollow'];
-  const settings={};
-  ids.forEach(id=>{const el=document.getElementById(id);if(el)settings[id]=el.type==='checkbox'?el.checked:el.value;});
-  return {version:4,savedAt:new Date().toISOString(),raw:document.getElementById('lyricInput').value,
-    lyrics:lyrics,selectedIdx:selectedIdx,settings:settings,
-    ratio:(document.getElementById('previewWrap').className.match(/(reels|youtube|square)/)||[])[1]||'reels'};
-}
-function saveToLocal(){
-  try{localStorage.setItem(PREMIUM_STATE_KEY,JSON.stringify(getPremiumState()));return true;}
-  catch(err){const s=document.getElementById('renderStatus');if(s)s.textContent='অটো-সেভের জায়গা পাওয়া যাচ্ছে না। Save চাপ দিয়ে Project JSON সংরক্ষণ করুন।';return false;}
-}
-function saveProject(){
-  const data=getPremiumState();
-  try{localStorage.setItem(PREMIUM_STATE_KEY,JSON.stringify(data));}catch(err){}
-  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
-  const url=URL.createObjectURL(blob),a=document.createElement('a');
-  a.href=url;a.download='LyricStudio_Project_'+Date.now()+'.json';
-  document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000);
-  const s=document.getElementById('renderStatus');
-  if(s)s.textContent='প্রজেক্ট JSON তৈরি হয়েছে। অ্যাপ নতুন করে খুললে অডিও/ব্যাকগ্রাউন্ড আবার বেছে নিতে হতে পারে।';
-}
-function restorePremiumState(data){
-  if(!data||typeof data!=='object')return;
-  if(typeof data.raw==='string')document.getElementById('lyricInput').value=data.raw;
-  if(Array.isArray(data.lyrics))lyrics=data.lyrics.filter(x=>x&&typeof x.text==='string').map(x=>({
-    text:x.text,start:Number.isFinite(x.start)?x.start:null,end:Number.isFinite(x.end)?x.end:null,
-    duration:Number.isFinite(x.duration)?x.duration:3}));
-  if(data.settings)Object.keys(data.settings).forEach(id=>{const el=document.getElementById(id);if(el&&data.settings[id]!==undefined){if(el.type==='checkbox')el.checked=!!data.settings[id];else el.value=data.settings[id];}});
-  if(['reels','youtube','square'].includes(data.ratio))setRatio(data.ratio);
-  selectedIdx=Math.min(Math.max(0,Number(data.selectedIdx)||0),Math.max(0,lyrics.length-1));
-  renderSyncList();renderPreview(0);
-}
-document.getElementById('importFile').onchange=(e)=>{
-  const f=e.target.files&&e.target.files[0];if(!f)return;
-  const r=new FileReader();r.onload=()=>{try{restorePremiumState(JSON.parse(r.result));saveToLocal();}catch(err){alert('প্রজেক্ট ফাইলটি পড়া যাচ্ছে না।');}};
-  r.readAsText(f);e.target.value='';
-};
-document.getElementById('lyricInput').addEventListener('input',()=>saveToLocal());
-['fontSize','fadeMode','showNext','showRain','tapDelay','autoFollow'].forEach(id=>{const el=document.getElementById(id);if(el)el.addEventListener('change',()=>{saveToLocal();renderPreview(t);});});
-document.addEventListener('visibilitychange',()=>{
+function applyLyrics() {
+  const raw = document.getElementById('lyricInput').value.trim();
+  if (!raw) {
+    alert('Lyrics likhun');
+    return;
+  }
+  const lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  lyrics = lines.map(text => ({ text, start: null, end: null, duration: 3 }));
+  selectedIdx = 0;
+  if (duration === 0 && audioEl.duration) duration = audioEl.duration;
+  renderSyncList();
+  renderPreview();
   saveToLocal();
-  if(document.hidden){if(!isRendering&&playing)pauseAudio();}
-  else{resizeRain();initRain();drawRain();renderPreview(t);}
-});
-window.addEventListener('pagehide',()=>saveToLocal());
-window.addEventListener('beforeunload',()=>saveToLocal());
-try{const saved=localStorage.getItem(PREMIUM_STATE_KEY);if(saved)restorePremiumState(JSON.parse(saved));}catch(err){}
+}
 
+function clearLyrics() {
+  lyrics = [];
+  selectedIdx = 0;
+  document.getElementById('lyricInput').value = '';
+  renderSyncList();
+  renderPreview();
+  saveToLocal();
+}
+
+function renderSyncList() {
+  const c = document.getElementById('syncList');
+  if (!c) return;
+  const keepTop = c.scrollTop;
+  c.innerHTML = '';
+  if (!lyrics.length) {
+    c.innerHTML = '<div style="opacity:.6;padding:12px;">No lyrics yet</div>';
+    return;
+  }
+
+  lyrics.forEach((l, i) => {
+    const d = document.createElement('div');
+    d.className = 'lyricItem' + (i === selectedIdx ? ' active' : '');
+    d.innerHTML = '<div class="num">' + String(i + 1).padStart(2, '0') + '</div><div class="txt">' + l.text + '</div><div class="time">' + (l.start !== null ? fmt(l.start) : '--:--') + '</div><div style="display:flex;gap:4px"><button class="btn small" onclick="selectLine(' + i + ')">Edit</button></div>';
+    d.onclick = () => selectLine(i);
+    c.appendChild(d);
+  });
+
+  c.scrollTop = keepTop;
+  const nt = document.getElementById('nextToSetText');
+  if (nt) nt.textContent = lyrics[selectedIdx] ? String(selectedIdx + 1).padStart(2, '0') + '. ' + lyrics[selectedIdx].text : '—';
+  const autoFollow = document.getElementById('autoFollow');
+  if (!autoFollow || autoFollow.checked) scrollToSelected();
+  drawTimeline();
+}
+
+function scrollToSelected() {
+  const c = document.getElementById('syncList');
+  if (!c || !c.children.length) return;
+  const el = c.children[selectedIdx];
+  if (!el) return;
+  const top = el.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop;
+  c.scrollTop = Math.max(0, top - c.clientHeight / 2 + el.offsetHeight / 2);
+}
+
+function selectLine(i) {
+  if (!lyrics.length) return;
+  selectedIdx = i;
+  if (lyrics[i].start !== null && !isNaN(lyrics[i].start)) {
+    audioEl.currentTime = lyrics[i].start;
+  }
+  renderSyncList();
+  renderPreview();
+}
+
+function playAudio() {
+  if (!audioEl.src) {
+    alert('Audio select first');
+    return;
+  }
+  try {
+    const p = audioEl.play();
+    if (p && p.then) p.then(() => { playing = true; updatePlayButtons(); });
+    else playing = true;
+    updatePlayButtons();
+  } catch (e) {
+    alert('Audio play failed');
+  }
+}
+
+function pauseAudio() {
+  try {
+    audioEl.pause();
+  } catch (e) {}
+  playing = false;
+  updatePlayButtons();
+}
+
+function restartAudio() {
+  if (!audioEl.src) {
+    alert('Audio select first');
+    return;
+  }
+  audioEl.currentTime = 0;
+  playing = true;
+  audioEl.play();
+  updatePlayButtons();
+}
+
+function seekBy(delta) {
+  if (!audioEl.src) {
+    alert('Audio select first');
+    return;
+  }
+  audioEl.currentTime = Math.max(0, audioEl.currentTime + delta);
+  renderPreview();
+}
+
+function setSpeed(r) {
+  audioEl.playbackRate = Number(r) || 1;
+  document.querySelectorAll('.speedBtn').forEach(btn => btn.classList.toggle('on', Number(btn.dataset.r) === Number(r)));
+}
+
+function setCurrentLineTime() {
+  if (!audioEl.src) {
+    alert('Audio select first');
+    return;
+  }
+  if (!lyrics.length) {
+    alert('Apply lyrics first');
+    return;
+  }
+  const current = Number(audioEl.currentTime || 0);
+  history.push({ index: selectedIdx, value: lyrics[selectedIdx].start });
+  lyrics[selectedIdx].start = current;
+  renderSyncList();
+  renderPreview();
+  saveToLocal();
+}
+
+function nudge(delta) {
+  if (!lyrics.length) {
+    alert('Apply lyrics first');
+    return;
+  }
+  if (lyrics[selectedIdx].start === null) {
+    alert('Set current line time first');
+    return;
+  }
+  history.push({ index: selectedIdx, value: lyrics[selectedIdx].start });
+  lyrics[selectedIdx].start = Math.max(0, Number(lyrics[selectedIdx].start) + Number(delta));
+  renderSyncList();
+  renderPreview();
+  saveToLocal();
+}
+
+function undo() {
+  if (!history.length) {
+    alert('Nothing to undo');
+    return;
+  }
+  const last = history.pop();
+  if (last && lyrics[last.index]) lyrics[last.index].start = last.value;
+  renderSyncList();
+  renderPreview();
+  saveToLocal();
+}
+
+function renderPreview() {
+  const cur = document.getElementById('previewCur');
+  const next = document.getElementById('previewNext');
+  const prog = document.getElementById('previewProg');
+  if (!cur || !next) return;
+
+  const time = Number(audioEl.currentTime || 0);
+  let curText = 'Preview here';
+  let nextText = '';
+  if (lyrics.length) {
+    const idx = selectedIdx;
+    curText = lyrics[idx] ? lyrics[idx].text : 'Preview here';
+    nextText = lyrics[idx + 1] ? lyrics[idx + 1].text : '';
+  }
+
+  cur.textContent = curText;
+  next.textContent = nextText;
+  if (duration && audioEl.duration) {
+    const p = Math.min(100, (time / audioEl.duration) * 100);
+    if (prog) prog.style.width = p + '%';
+  }
+}
+
+function drawTimeline() {
+  const canvas = document.getElementById('waveCanvas');
+  const playhead = document.getElementById('playhead');
+  if (!canvas || !playhead) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width = canvas.clientWidth * window.devicePixelRatio || canvas.clientWidth;
+  const h = canvas.height = 84 * window.devicePixelRatio || 84;
+  ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#0e0e10';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#2a2a2e';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 20; i++) {
+    const x = (i / 20) * w;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+    ctx.stroke();
+  }
+
+  if (audioEl.duration) {
+    const pct = Math.min(100, Math.max(0, (audioEl.currentTime / audioEl.duration) * 100));
+    playhead.style.left = pct + '%';
+  }
+}
+
+function startRender() {
+  if (!audioEl.src) {
+    alert('Audio select first');
+    return;
+  }
+  if (!lyrics.length) {
+    alert('Apply lyrics first');
+    return;
+  }
+  const status = document.getElementById('renderStatus');
+  if (status) status.textContent = 'Rendering started...';
+  const canvas = document.getElementById('captureCanvas');
+  const ctx = canvas.getContext('2d');
+  const preview = document.getElementById('previewCanvas');
+  const cctx = preview.getContext('2d');
+  const w = 1280, h = 720;
+  canvas.width = w;
+  canvas.height = h;
+  const step = Math.max(1, Math.floor(audioEl.duration / 10));
+  ctx.fillStyle = '#070709';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '700 54px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(lyrics[selectedIdx] ? lyrics[selectedIdx].text : 'Lyric Studio', w / 2, h / 2);
+  const url = canvas.toDataURL('image/png');
+  const img = new Image();
+  img.onload = () => {
+    cctx.clearRect(0, 0, preview.width || w, preview.height || h);
+    cctx.drawImage(img, 0, 0, preview.width || w, preview.height || h);
+    const blob = canvasToBlob(canvas, 'image/png');
+    if (blob) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'lyric-preview.png';
+      a.click();
+      if (status) status.textContent = 'Preview image saved successfully';
+    }
+  };
+  img.src = url;
+}
+
+function canvasToBlob(canvas, type) {
+  try {
+    const data = canvas.toDataURL(type);
+    const raw = atob(data.split(',')[1]);
+    const arr = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+    return new Blob([arr], { type: 'image/png' });
+  } catch (e) {
+    return null;
+  }
+}
+
+function exportProject() {
+  const project = { lyrics, selectedIdx, audioName: audioEl.dataset.name || '', duration };
+  const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'lyric-project.json';
+  a.click();
+}
+
+function testGap() {
+  if (!lyrics.length) {
+    alert('Apply lyrics first');
+    return;
+  }
+  const current = Number(audioEl.currentTime || 0);
+  lyrics[selectedIdx].start = current + 8;
+  renderSyncList();
+  renderPreview();
+}
+
+function saveProject() {
+  exportProject();
+}
+
+function loadProject() {
+  document.getElementById('importFile').click();
+}
+
+function bindAudioInput() {
+  const fileInput = document.getElementById('audioFile');
+  const importInput = document.getElementById('importFile');
+
+  fileInput.addEventListener('change', function (e) {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    audioEl.src = url;
+    audioEl.dataset.name = f.name;
+    audioEl.load();
+    setText('audioInfo', '✅ ' + f.name);
+    setText('timeLabel', '0:00.0 / 0:00.0');
+    duration = 0;
+    saveToLocal();
+  });
+
+  importInput.addEventListener('change', function (e) {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+      try {
+        const obj = JSON.parse(reader.result);
+        if (Array.isArray(obj.lyrics)) {
+          lyrics = obj.lyrics;
+          selectedIdx = obj.selectedIdx || 0;
+          renderSyncList();
+          renderPreview();
+          saveToLocal();
+        }
+      } catch (err) {
+        alert('Invalid project file');
+      }
+    };
+    reader.readAsText(f);
+  });
+}
+
+function registerEvents() {
+  const playBtn = document.getElementById('playBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const bPlay = document.getElementById('bPlay');
+  if (playBtn) playBtn.addEventListener('click', playAudio);
+  if (pauseBtn) pauseBtn.addEventListener('click', pauseAudio);
+  if (bPlay) bPlay.addEventListener('click', () => (playing ? pauseAudio() : playAudio()));
+
+  audioEl.addEventListener('play', () => { playing = true; updatePlayButtons(); });
+  audioEl.addEventListener('pause', () => { playing = false; updatePlayButtons(); });
+  audioEl.addEventListener('timeupdate', () => {
+    const time = Number(audioEl.currentTime || 0);
+    const dur = Number(audioEl.duration || 0);
+    const timeText = dur ? fmt(time) + ' / ' + fmt(dur) : fmt(time) + ' / 0:00.0';
+    setText('timeLabel', timeText);
+    renderPreview();
+    drawTimeline();
+  });
+
+  document.getElementById('fontSize').addEventListener('input', function () {
+    const cur = document.getElementById('previewCur');
+    if (cur) cur.style.fontSize = this.value + 'px';
+  });
+
+  document.getElementById('showNext').addEventListener('change', function () {
+    const next = document.getElementById('previewNext');
+    if (next) next.style.display = this.checked ? 'block' : 'none';
+  });
+
+  document.getElementById('showRain').addEventListener('change', function () {
+    const rain = document.getElementById('rainCanvas');
+    if (rain) rain.style.display = this.checked ? 'block' : 'none';
+  });
+
+  document.getElementById('fadeMode').addEventListener('change', function () {
+    const cur = document.getElementById('previewCur');
+    if (cur) cur.style.opacity = this.value === 'fade' ? '1' : '0.9';
+  });
+}
+
+bindAudioInput();
+registerEvents();
+renderSyncList();
+renderPreview();
+loadFromLocal();
+updatePlayButtons();
 </script>
 </body>
 </html>
